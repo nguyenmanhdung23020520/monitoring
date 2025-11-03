@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cicd-demo
+  namespace: argocd
+spec:
+  destination:
+    name: ''
+    namespace: default
+    server: 'https://kubernetes.default.svc'
+  source:
+    repoURL: 'https://github.com/nguyenmanhdung23020520/github_action_cicd.git'
+    targetRevision: HEAD
+    path: k8s
+  project: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,119 @@
+name: Full CI/CD Pipeline (Test and Deploy)
+
+# === TRIGGERS ===
+# Chạy khi:
+# 1. Push lên nhánh 'main'
+# 2. Mở Pull Request (PR) hoặc push lên PR nhắm vào 'main'
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Tự động hủy các lượt chạy cũ khi có push mới
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# === BIẾN MÔI TRƯỜNG ===
+env:
+  DOCKER_IMAGE_NAME: manhdung0507/cicd-demo
+  CONFIG_REPO_NAME: github_action_cicd
+  CONFIG_REPO_PATH: k8s/deployment.yaml
+
+# === JOBS (CÁC VIỆC CẦN LÀM) ===
+jobs:
+  # === JOB 1: CI (Test & Lint) ===
+  # Job này chạy cho CẢ 'push' VÀ 'pull_request'
+  ci:
+    name: Run Lint and Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js (dùng Node 18)
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18' # Bạn có thể đổi version Node nếu cần
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+     # - name: Run Lint
+      #  run: npm run lint # Giả định bạn có script "lint" trong package.json
+
+      #- name: Run Tests
+       # run: npm test # Giả định bạn có script "test" trong package.json
+
+  # === JOB 2: CD (Build, Push, Deploy) ===
+  # Job này CHỈ CHẠY KHI PUSH LÊN 'main'
+  cd:
+    name: Build, Push, and Deploy
+    runs-on: ubuntu-latest
+
+    # === QUAN TRỌNG ===
+    # 1. Phải chờ 'ci' (Job 1) chạy thành công
+    needs: ci
+    # 2. CHỈ chạy nếu sự kiện là 'push' (tức là đã merge, không phải PR)
+    if: github.event_name == 'push'
+
+    steps:
+      # 1. Checkout repo code
+      - name: Checkout App Repo
+        uses: actions/checkout@v3
+
+      # 2. Đăng nhập Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 3. Lấy Git SHA ngắn làm image tag
+      - name: Get short Git SHA
+        id: vars
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # 4. Build và đẩy (push) Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.vars.outputs.sha }}
+
+      # 5. Checkout repo cấu hình (chính nó)
+      - name: Checkout Config Repo
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository_owner }}/${{ env.CONFIG_REPO_NAME }}
+          token: ${{ secrets.PAT_FOR_CONFIG_REPO }}
+          path: 'config-repo'
+
+      # 6. Cập nhật image tag trong file deployment.yaml
+      - name: Update image tag in deployment.yaml
+        run: |
+          cd config-repo
+          echo "Updating image tag to: ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.vars.outputs.sha }}"
+          
+          # Lệnh sed để thay thế image tag
+          sed -i 's|image: ${{ env.DOCKER_IMAGE_NAME }}:.*|image: ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.vars.outputs.sha }}|' ${{ env.CONFIG_REPO_PATH }}
+          
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit."
+          else
+            # Thêm [ci skip] để NGĂN VÒNG LẶP VÔ TẬN
+            git commit -m "Update image tag to ${{ steps.vars.outputs.sha }} [ci skip]"
+            git push
+            echo "Changes pushed to config repo."
+          fi
